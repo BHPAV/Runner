@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Database
+*.db
+
+# Run outputs (generated files)
+runs/
+
+# Environment
+.env
