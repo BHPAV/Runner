@@ -4,11 +4,16 @@ Runner CLI - Unified command-line interface for the Runner task framework.
 
 This provides access to all Runner functionality:
 - Task execution (stack runner)
+- Request processing (agent workflow)
 - Hybridgraph operations (sync, health, reader, etc.)
-- Database bootstrap
+- Trigger management (APOC triggers, cascade rules)
+- Database bootstrap and migrations
 
 Usage:
     runner stack start <task_id>     Run a task with stack runner
+    runner processor                 Start request processor daemon
+    runner triggers --install        Install APOC triggers
+    runner cascade list              List cascade rules
     runner sync                      Sync jsongraph to hybridgraph
     runner health                    Check hybridgraph health
     runner reader list               List hybridgraph sources
@@ -26,6 +31,34 @@ def cmd_stack(args):
     # Delegate to stack_runner's main with modified argv
     sys.argv = ["stack-runner"] + args
     stack_runner.main()
+
+
+def cmd_processor(args):
+    """Handle request processor commands."""
+    from runner.processor import daemon
+    sys.argv = ["processor"] + args
+    daemon.main()
+
+
+def cmd_triggers(args):
+    """Handle APOC trigger commands."""
+    from runner.triggers import setup
+    sys.argv = ["triggers"] + args
+    setup.main()
+
+
+def cmd_cascade(args):
+    """Handle cascade rule commands."""
+    from runner.triggers import cascade_rules
+    sys.argv = ["cascade"] + args
+    cascade_rules.main()
+
+
+def cmd_mcp(args):
+    """Handle MCP server commands."""
+    from runner.mcp import server
+    sys.argv = ["mcp"] + args
+    server.main()
 
 
 def cmd_sync(args):
@@ -77,6 +110,13 @@ def cmd_bootstrap(args):
     bootstrap.main()
 
 
+def cmd_schema(args):
+    """Handle schema migration commands."""
+    from runner.db.migrations import add_task_requests
+    sys.argv = ["schema"] + args
+    add_task_requests.main()
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -85,21 +125,36 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Commands:
-  stack     Task execution (LIFO stack runner)
-  sync      Sync jsongraph to hybridgraph
-  health    Check hybridgraph health and integrity
-  reader    Query and reconstruct documents from hybridgraph
-  gc        Run garbage collection on orphaned nodes
-  delete    Delete a source from hybridgraph
-  migrate   Full migration from jsongraph to hybridgraph
-  bootstrap Initialize databases
+  stack      Task execution (LIFO stack runner)
+  processor  Request processor daemon (bridges MCP to stack runner)
+  triggers   Manage APOC triggers for cascading
+  cascade    Manage cascade rules for automatic task creation
+  mcp        Start MCP server for agent integration
+  schema     Run schema migrations (TaskRequest, etc.)
+  sync       Sync jsongraph to hybridgraph
+  health     Check hybridgraph health and integrity
+  reader     Query and reconstruct documents from hybridgraph
+  gc         Run garbage collection on orphaned nodes
+  delete     Delete a source from hybridgraph
+  migrate    Full migration from jsongraph to hybridgraph
+  bootstrap  Initialize databases
 
-Examples:
-  runner stack start my_task          Run a task
-  runner sync --limit 100             Sync up to 100 documents
-  runner health --full                Full health check
-  runner reader list                  List all sources
-  runner reader get my_source         Reconstruct a document
+Agent Workflow:
+  runner schema                      Install TaskRequest schema
+  runner triggers --install          Install APOC triggers
+  runner processor -v                Start processor daemon (verbose)
+  runner cascade list                List cascade rules
+
+Task Execution:
+  runner stack start my_task         Run a task directly
+  runner stack start upload_dual \\
+    --params '{"json_path": "f.json"}'
+
+Hybridgraph Operations:
+  runner sync --limit 100            Sync up to 100 documents
+  runner health --full               Full health check
+  runner reader list                 List all sources
+  runner reader get my_source        Reconstruct a document
 """,
     )
 
@@ -112,56 +167,91 @@ Examples:
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # Stack command
-    stack_parser = subparsers.add_parser(
+    subparsers.add_parser(
         "stack",
         help="Task execution with stack runner",
         add_help=False,
     )
 
+    # Processor command
+    subparsers.add_parser(
+        "processor",
+        help="Request processor daemon",
+        add_help=False,
+    )
+
+    # Triggers command
+    subparsers.add_parser(
+        "triggers",
+        help="Manage APOC triggers",
+        add_help=False,
+    )
+
+    # Cascade command
+    subparsers.add_parser(
+        "cascade",
+        help="Manage cascade rules",
+        add_help=False,
+    )
+
+    # MCP command
+    subparsers.add_parser(
+        "mcp",
+        help="Start MCP server",
+        add_help=False,
+    )
+
+    # Schema command
+    subparsers.add_parser(
+        "schema",
+        help="Run schema migrations",
+        add_help=False,
+    )
+
     # Sync command
-    sync_parser = subparsers.add_parser(
+    subparsers.add_parser(
         "sync",
         help="Sync jsongraph to hybridgraph",
         add_help=False,
     )
 
     # Health command
-    health_parser = subparsers.add_parser(
+    subparsers.add_parser(
         "health",
         help="Check hybridgraph health",
         add_help=False,
     )
 
     # Reader command
-    reader_parser = subparsers.add_parser(
+    subparsers.add_parser(
         "reader",
         help="Query and reconstruct documents",
         add_help=False,
     )
 
     # GC command
-    gc_parser = subparsers.add_parser(
+    subparsers.add_parser(
         "gc",
         help="Run garbage collection",
         add_help=False,
     )
 
     # Delete command
-    delete_parser = subparsers.add_parser(
+    subparsers.add_parser(
         "delete",
         help="Delete a source",
         add_help=False,
     )
 
     # Migrate command
-    migrate_parser = subparsers.add_parser(
+    subparsers.add_parser(
         "migrate",
         help="Full migration",
         add_help=False,
     )
 
     # Bootstrap command
-    bootstrap_parser = subparsers.add_parser(
+    subparsers.add_parser(
         "bootstrap",
         help="Initialize databases",
         add_help=False,
@@ -177,6 +267,11 @@ Examples:
     # Dispatch to appropriate handler
     handlers = {
         "stack": cmd_stack,
+        "processor": cmd_processor,
+        "triggers": cmd_triggers,
+        "cascade": cmd_cascade,
+        "mcp": cmd_mcp,
+        "schema": cmd_schema,
         "sync": cmd_sync,
         "health": cmd_health,
         "reader": cmd_reader,

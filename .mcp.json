@@ -31,6 +31,20 @@
         "NEO4J_TRANSPORT": "stdio",
         "NEO4J_READ_ONLY": "true"
       }
+    },
+    "runner-mcp": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "-m",
+        "runner.mcp.server"
+      ],
+      "env": {
+        "PYTHONPATH": "src",
+        "RUNNER_DB": "tasks.db",
+        "NEO4J_DATABASE": "hybridgraph",
+        "RUNS_DIR": "runs"
+      }
     }
   }
 }

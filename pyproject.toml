@@ -25,6 +25,7 @@ classifiers = [
 dependencies = [
     "neo4j>=5.0.0",
     "python-dotenv>=1.0.0",
+    "mcp>=1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -41,6 +42,10 @@ yaml = [
 [project.scripts]
 runner = "runner.cli:main"
 stack-runner = "runner.core.stack_runner:main"
+runner-processor = "runner.processor.daemon:main"
+runner-mcp = "runner.mcp.server:main"
+runner-triggers = "runner.triggers.setup:main"
+runner-cascade = "runner.triggers.cascade_rules:main"
 
 [project.urls]
 Repository = "https://github.com/runner/runner"
