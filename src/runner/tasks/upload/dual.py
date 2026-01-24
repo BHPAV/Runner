@@ -17,9 +17,22 @@ Parameters:
 import os
 import json
 import sys
-import hashlib
 from pathlib import Path
 from datetime import datetime, timezone
+
+try:
+    from runner.utils.hashing import compute_content_hash, compute_merkle_hash
+except ImportError:
+    # Fallback for direct execution outside package
+    import hashlib
+    def compute_content_hash(kind: str, key: str, value: str) -> str:
+        content = f"{kind}|{key}|{kind}:{value}"
+        return "c:" + hashlib.sha256(content.encode()).hexdigest()[:32]
+
+    def compute_merkle_hash(kind: str, key: str, child_hashes: list) -> str:
+        sorted_children = "|".join(sorted(child_hashes))
+        content = f"{kind}|{key}|{sorted_children}"
+        return "m:" + hashlib.sha256(content.encode()).hexdigest()[:32]
 
 params = json.loads(os.environ.get('TASK_PARAMS', '{}'))
 context = json.loads(os.environ.get('TASK_CONTEXT', '{}'))
@@ -95,17 +108,6 @@ if not doc_id:
 print(f"Dual upload: {source_info}", file=sys.stderr)
 print(f"Doc ID: {doc_id}", file=sys.stderr)
 print(f"Source DB: {source_db}, Target DB: {target_db}", file=sys.stderr)
-
-
-def compute_content_hash(kind: str, key: str, value: str) -> str:
-    content = f"{kind}|{key}|{value}"
-    return "c:" + hashlib.sha256(content.encode()).hexdigest()[:32]
-
-
-def compute_merkle_hash(kind: str, key: str, child_hashes: list) -> str:
-    sorted_children = "|".join(sorted(child_hashes))
-    content = f"{kind}|{key}|{sorted_children}"
-    return "m:" + hashlib.sha256(content.encode()).hexdigest()[:32]
 
 
 def flatten_json(data, parent_path="/root", parent_key="root"):

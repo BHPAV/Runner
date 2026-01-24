@@ -15,13 +15,14 @@ This module provides the deduplicated graph storage layer:
 # This limits CONTAINS* path traversals to prevent runaway queries
 MAX_TRAVERSAL_DEPTH = 100
 
+# Import key classes for convenient access
+from runner.hybridgraph.queries import HybridGraphQuery
+from runner.hybridgraph.sync import run_sync
+from runner.hybridgraph.health import run_health_check
+
 __all__ = [
     "MAX_TRAVERSAL_DEPTH",
-    "migrate",
-    "sync",
-    "reader",
-    "queries",
-    "health",
-    "delete",
-    "gc",
+    "HybridGraphQuery",
+    "run_sync",
+    "run_health_check",
 ]

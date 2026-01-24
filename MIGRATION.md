@@ -2,6 +2,15 @@
 
 This document describes the project reorganization from flat structure to Python package.
 
+## Status: COMPLETE
+
+The migration has been completed successfully:
+- [x] Code duplication removed (compute_content_hash centralized in `runner.utils.hashing`)
+- [x] CLI entry point created (`runner.cli:main`)
+- [x] Module exports populated in `__init__.py` files
+- [x] Test coverage added for core and tasks modules (116 tests passing)
+- [x] All imports verified working
+
 ## Overview
 
 The project has been reorganized from a flat directory structure to a proper Python package under `src/runner/`.
@@ -128,8 +137,19 @@ python hybridgraph_health_task.py
 python migrate_to_hybrid.py --dry-run
 ```
 
-**New:**
+**New (via unified CLI):**
 ```bash
+runner sync
+runner reader get <source_id>
+runner delete <source_id>
+runner gc
+runner health
+runner migrate --dry-run
+```
+
+**Or via module:**
+```bash
+python -m runner.cli sync
 python -m runner.hybridgraph.sync
 python -m runner.hybridgraph.reader get <source_id>
 python -m runner.hybridgraph.delete <source_id>
@@ -203,6 +223,15 @@ The original files in the root directory are preserved and continue to work for 
 
 ## Migration Checklist
 
+Package reorganization completed:
+- [x] Package structure created under `src/runner/`
+- [x] CLI entry point: `runner` command via `runner.cli:main`
+- [x] Stack runner entry point: `stack-runner` command via `runner.core.stack_runner:main`
+- [x] Centralized hashing utilities in `runner.utils.hashing`
+- [x] Test suite: 116 tests passing
+- [x] Module exports in `__init__.py` files
+
+User migration steps:
 - [ ] Install package: `pip install -e .`
 - [ ] Update imports in custom scripts
 - [ ] Update any scripts that call the old commands

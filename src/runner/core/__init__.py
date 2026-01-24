@@ -7,8 +7,18 @@ This module provides the main task execution infrastructure:
 - bootstrap: Database initialization and seeding
 """
 
-# Note: Imports will be added once modules are migrated
-# from runner.core.stack_runner import main as stack_runner_main
-# from runner.core.runner import main as runner_main
+from runner.core.stack_runner import (
+    StackContext,
+    get_config,
+    create_stack,
+    run_stack_to_completion,
+    run_stack_step,
+)
 
-__all__ = []
+__all__ = [
+    "StackContext",
+    "get_config",
+    "create_stack",
+    "run_stack_to_completion",
+    "run_stack_step",
+]

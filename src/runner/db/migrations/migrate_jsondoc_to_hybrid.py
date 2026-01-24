@@ -25,7 +25,6 @@ Usage:
 """
 
 import argparse
-import hashlib
 import os
 import re
 import sys
@@ -38,6 +37,20 @@ except ImportError:
     print("Error: neo4j driver not installed. Run: pip install neo4j")
     sys.exit(1)
 
+try:
+    from runner.utils.hashing import compute_content_hash, compute_merkle_hash
+except ImportError:
+    # Fallback for direct execution outside package
+    import hashlib
+    def compute_content_hash(kind: str, key: str, value: str) -> str:
+        content = f"{kind}|{key}|{kind}:{value}"
+        return "c:" + hashlib.sha256(content.encode()).hexdigest()[:32]
+
+    def compute_merkle_hash(kind: str, key: str, child_hashes: list) -> str:
+        sorted_children = "|".join(sorted(child_hashes))
+        content = f"{kind}|{key}|{sorted_children}"
+        return "m:" + hashlib.sha256(content.encode()).hexdigest()[:32]
+
 
 def get_config():
     return {
@@ -47,19 +60,6 @@ def get_config():
         "source_db": os.environ.get("NEO4J_DATABASE", "jsongraph"),
         "target_db": "hybridgraph",
     }
-
-
-def compute_content_hash(kind: str, key: str, value: str) -> str:
-    """Compute content-addressable hash for leaf values."""
-    content = f"{kind}|{key}|{value}"
-    return "c:" + hashlib.sha256(content.encode()).hexdigest()[:32]
-
-
-def compute_merkle_hash(kind: str, key: str, child_hashes: list) -> str:
-    """Compute Merkle hash for structure nodes."""
-    sorted_children = "|".join(sorted(child_hashes))
-    content = f"{kind}|{key}|{sorted_children}"
-    return "m:" + hashlib.sha256(content.encode()).hexdigest()[:32]
 
 
 def extract_key_from_path(path: str) -> str:
