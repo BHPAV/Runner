@@ -6,10 +6,10 @@ Compact schema and statistics for jsongraph and hybridgraph Neo4j databases.
 
 | Database | Purpose | Total Nodes | Strategy |
 |----------|---------|-------------|----------|
-| jsongraph | Full JSON tree storage | ~1.4M | One node per JSON element |
-| hybridgraph | Deduplicated storage | ~5K | Merkle-hashed, content-addressable |
+| jsongraph | Full JSON tree storage | ~1.45M | One node per JSON element |
+| hybridgraph | Deduplicated storage | ~277K | Merkle-hashed, content-addressable |
 
-**Deduplication ratio**: ~99.6% node reduction
+**Deduplication ratio**: ~81% node reduction (from jsongraph to hybridgraph)
 
 ---
 
@@ -61,24 +61,26 @@ Compact schema and statistics for jsongraph and hybridgraph Neo4j databases.
 
 | Label | Count | Purpose |
 |-------|-------|---------|
-| Content | 2,829 | Leaf values (deduplicated) |
-| Structure | 2,204 | Objects/arrays (Merkle-hashed) |
-| Source | 57 | Document entry points |
+| Structure | 136,243 | Objects/arrays (Merkle-hashed) |
+| Content | 108,472 | Leaf values (deduplicated) |
+| Source | 24,349 | Document entry points |
+| Identifier | 7,580 | Extracted entities for cross-doc linking |
 
 ### Relationships
 
 | Type | Count | Pattern |
 |------|-------|---------|
-| HAS_VALUE | 9,083 | Structure → Content |
-| CONTAINS | 5,016 | Structure → Structure |
-| HAS_ROOT | 57 | Source → root Structure |
+| HAS_VALUE | 417,731 | Structure → Content |
+| CONTAINS | 356,391 | Structure → Structure |
+| HAS_ROOT | 24,349 | Source → root Structure |
+| HAS_IDENTIFIER | 7,835 | Content → Identifier |
 
 ### Key Properties
 
 **Source**
 ```
 source_id (indexed, unique)
-source_type: "document" | "api" | "database"
+source_type: "knowledge_person" | "knowledge_organization" | "document" | ...
 node_count: original node count
 ```
 
@@ -98,14 +100,41 @@ value_str / value_num / value_bool
 ref_count: structures referencing this
 ```
 
+**Identifier**
+```
+kind: "email" | "hostname" | "ip" | "mac" | "phone" | "user_id"
+value (indexed): the identifier string
+ref_count: content nodes referencing this
+```
+
+### Source Types
+
+| Type | Count |
+|------|-------|
+| knowledge_person | 12,453 |
+| knowledge_organization | 7,214 |
+| knowledge_location | 4,586 |
+| document | 57 |
+| network_device | 16 |
+
+### Identifier Types
+
+| Kind | Count | References |
+|------|-------|------------|
+| email | 6,128 | 6,307 |
+| hostname | 1,407 | 1,481 |
+| ip | 16 | 16 |
+| mac | 15 | 15 |
+| user_id | 4 | 10 |
+
 ### Top Shared Content
 
 | Key | Value | References |
 |-----|-------|------------|
-| source | "json_data" | 1,144 |
-| success | "true" | 1,136 |
-| uploaded | "true" | 936 |
-| classes_count | "0" | 808 |
+| high | (numeric) | 231,864 |
+| low | (numeric) | 36,691 |
+| type | "Person" | 29,790 |
+| timeZoneId | (null) | 28,983 |
 
 ---
 
@@ -123,19 +152,19 @@ JsonDoc ─ROOT─► JsonNode ─HAS_CHILD─► JsonNode ─HAS_CHILD─► Js
 ```
 Source ─HAS_ROOT─► Structure ─CONTAINS─► Structure ─CONTAINS─► ...
                        │                     │
-                       └─HAS_VALUE─► Content (shared, ref_count tracked)
+                       └─HAS_VALUE─► Content ─HAS_IDENTIFIER─► Identifier
 ```
 
 ---
 
-## Sync Tracking
+## Migration Status
 
-**jsongraph → hybridgraph sync status:**
-- `Data.sync_status = NULL` → Never synced
-- `Data.sync_status = "pending"` → Queued for sync
-- `Data.sync_status = "synced"` → In hybridgraph
-
-**Current:** All 46,162 Data nodes synced to 57 Sources (aggregated)
+| Source | Documents | Status |
+|--------|-----------|--------|
+| Data nodes (task outputs) | 57 | ✅ Synced |
+| JsonDoc (knowledge graph) | 24,292 | ✅ Migrated |
+| Identifiers | 7,580 | ✅ Migrated |
+| **Total Sources** | **24,349** | ✅ Complete |
 
 ---
 
@@ -147,3 +176,34 @@ Source ─HAS_ROOT─► Structure ─CONTAINS─► Structure ─CONTAINS─►
 | `mcp__jsongraph-neo4j-cypher__read_neo4j_cypher` | jsongraph |
 | `mcp__hybridgraph-neo4j-cypher__get_neo4j_schema` | hybridgraph |
 | `mcp__hybridgraph-neo4j-cypher__read_neo4j_cypher` | hybridgraph |
+
+---
+
+## Common Queries
+
+### Find documents by identifier
+```cypher
+MATCH (i:Identifier {kind: 'email', value: $email})
+MATCH (c:Content)-[:HAS_IDENTIFIER]->(i)
+MATCH (s:Structure)-[:HAS_VALUE]->(c)
+MATCH (src:Source)-[:HAS_ROOT]->(:Structure)-[:CONTAINS*0..10]->(s)
+RETURN DISTINCT src.source_id, src.source_type
+```
+
+### Find shared structures
+```cypher
+MATCH (s:Structure)
+WHERE s.ref_count > 10
+RETURN s.kind, s.key, s.child_keys, s.ref_count
+ORDER BY s.ref_count DESC LIMIT 20
+```
+
+### Reconstruct document
+```cypher
+MATCH (src:Source {source_id: $id})-[:HAS_ROOT]->(root)
+CALL apoc.path.subgraphAll(root, {
+  relationshipFilter: 'CONTAINS>|HAS_VALUE>',
+  maxLevel: 20
+}) YIELD nodes, relationships
+RETURN nodes, relationships
+```
