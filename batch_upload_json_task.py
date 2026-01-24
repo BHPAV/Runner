@@ -34,8 +34,9 @@ if not file_paths:
 push_tasks = []
 for file_path in file_paths:
     # Generate doc_id from filename
+    # Generate doc_id from filename (include extension to avoid collisions)
     basename = os.path.basename(file_path)
-    doc_id = os.path.splitext(basename)[0]
+    doc_id = basename.replace('.', '_').replace(' ', '_')
 
     push_tasks.append({
         'task_id': 'upload_jsongraph',

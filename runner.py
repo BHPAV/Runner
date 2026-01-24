@@ -386,6 +386,25 @@ def execute_task(
             finally:
                 os.unlink(script_path)
 
+        elif task_type == "python_file":
+            # code contains the filename relative to working directory or absolute
+            script_path = code
+            if not os.path.isabs(script_path):
+                # Relative to the runner's directory
+                script_path = os.path.join(os.path.dirname(__file__), script_path)
+
+            if not os.path.exists(script_path):
+                raise ValueError(f"Python file not found: {script_path}")
+
+            result = subprocess.run(
+                [sys.executable, script_path],
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                cwd=cwd,
+                env=exec_env,
+            )
+
         else:
             raise ValueError(f"Unknown task type: {task_type}")
 

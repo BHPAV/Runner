@@ -444,6 +444,83 @@ print(json.dumps(result))
             "parameters_json": json.dumps({"n": 5}),
             "timeout_seconds": 60,
         },
+        # =====================================================================
+        # File Type Converter Tasks - for Neo4j ingestion pipeline
+        # =====================================================================
+        {
+            "task_id": "find_unrecorded_files_task",
+            "task_type": "python_file",
+            "code": "find_unrecorded_files_task.py",
+            "parameters_json": json.dumps({
+                "search_path": "~/Downloads",
+                "extensions": [".csv", ".yaml", ".yml", ".xml", ".md", ".txt", ".py", ".ts", ".js"],
+                "limit": 20
+            }),
+            "timeout_seconds": 600,
+        },
+        {
+            "task_id": "batch_convert_files_task",
+            "task_type": "python_file",
+            "code": "batch_convert_files_task.py",
+            "parameters_json": json.dumps({}),
+            "timeout_seconds": 300,
+        },
+        {
+            "task_id": "csv_to_json_task",
+            "task_type": "python_file",
+            "code": "csv_to_json_task.py",
+            "parameters_json": json.dumps({}),
+            "timeout_seconds": 120,
+        },
+        {
+            "task_id": "yaml_to_json_task",
+            "task_type": "python_file",
+            "code": "yaml_to_json_task.py",
+            "parameters_json": json.dumps({}),
+            "timeout_seconds": 120,
+        },
+        {
+            "task_id": "xml_to_json_task",
+            "task_type": "python_file",
+            "code": "xml_to_json_task.py",
+            "parameters_json": json.dumps({}),
+            "timeout_seconds": 120,
+        },
+        {
+            "task_id": "markdown_to_json_task",
+            "task_type": "python_file",
+            "code": "markdown_to_json_task.py",
+            "parameters_json": json.dumps({}),
+            "timeout_seconds": 120,
+        },
+        {
+            "task_id": "text_to_json_task",
+            "task_type": "python_file",
+            "code": "text_to_json_task.py",
+            "parameters_json": json.dumps({}),
+            "timeout_seconds": 120,
+        },
+        {
+            "task_id": "python_to_json_task",
+            "task_type": "python_file",
+            "code": "python_to_json_task.py",
+            "parameters_json": json.dumps({}),
+            "timeout_seconds": 120,
+        },
+        {
+            "task_id": "code_to_json_task",
+            "task_type": "python_file",
+            "code": "code_to_json_task.py",
+            "parameters_json": json.dumps({}),
+            "timeout_seconds": 120,
+        },
+        {
+            "task_id": "upload_jsongraph",
+            "task_type": "python_file",
+            "code": "upload_jsongraph_task.py",
+            "parameters_json": json.dumps({}),
+            "timeout_seconds": 600,
+        },
     ]
 
     for task in test_tasks:
