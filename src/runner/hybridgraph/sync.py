@@ -19,7 +19,6 @@ Environment Variables:
   TARGET_DB (default: hybridgraph)
 """
 
-import hashlib
 import json
 import os
 import sys
@@ -32,6 +31,14 @@ except ImportError:
     print("Error: neo4j driver not installed")
     sys.exit(1)
 
+try:
+    from runner.utils.hashing import compute_content_hash, compute_merkle_hash, encode_value_for_hash
+except ImportError:
+    # Fallback for direct execution
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+    from runner.utils.hashing import compute_content_hash, compute_merkle_hash, encode_value_for_hash
+
 
 def get_config():
     return {
@@ -41,17 +48,6 @@ def get_config():
         "source_db": os.environ.get("SOURCE_DB", "jsongraph"),
         "target_db": os.environ.get("TARGET_DB", "hybridgraph"),
     }
-
-
-def compute_content_hash(kind: str, key: str, value: str) -> str:
-    content = f"{kind}|{key}|{value}"
-    return "c:" + hashlib.sha256(content.encode()).hexdigest()[:32]
-
-
-def compute_merkle_hash(kind: str, key: str, child_hashes: list) -> str:
-    sorted_children = "|".join(sorted(child_hashes))
-    content = f"{kind}|{key}|{sorted_children}"
-    return "m:" + hashlib.sha256(content.encode()).hexdigest()[:32]
 
 
 def ensure_sync_tracking(driver, source_db: str):
@@ -138,13 +134,7 @@ def compute_document_hashes(data: dict) -> dict:
     # Hash leaves first
     for path, node in data["nodes"].items():
         if node["kind"] in ["string", "number", "boolean", "null"]:
-            value = node["value_str"]
-            if value is None and node["value_num"] is not None:
-                value = str(node["value_num"])
-            elif value is None and node["value_bool"] is not None:
-                value = str(node["value_bool"]).lower()
-            elif value is None:
-                value = "null"
+            value = encode_value_for_hash(node["kind"], node["value_str"], node["value_num"], node["value_bool"])
             hashes[path] = compute_content_hash(node["kind"], node["key"], value)
 
     # Hash containers bottom-up
@@ -187,8 +177,21 @@ def get_existing_source_nodes(session, source_id: str) -> dict:
     return {"structures": [], "contents": []}
 
 
-def decrement_old_ref_counts(session, structures: list, contents: list):
-    """Decrement ref_counts for nodes that were previously referenced by this source."""
+def compute_ref_count_changes(old_hashes: set, new_hashes: set) -> tuple:
+    """
+    Compute which hashes need ref_count changes.
+
+    Returns:
+        (to_decrement, to_increment, unchanged)
+    """
+    to_decrement = old_hashes - new_hashes  # Only in old = decrement
+    to_increment = new_hashes - old_hashes  # Only in new = increment
+    unchanged = old_hashes & new_hashes     # In both = no change
+    return to_decrement, to_increment, unchanged
+
+
+def decrement_ref_counts(session, structures: list, contents: list):
+    """Decrement ref_counts for nodes being removed from this source."""
     if structures:
         session.run("""
             UNWIND $merkles AS merkle
@@ -221,33 +224,67 @@ def sync_document(driver, source_db: str, target_db: str, doc_id: str) -> dict:
     if not data["nodes"]:
         return {"error": f"No data found for {doc_id}"}
 
-    # Compute hashes
+    # Compute hashes for new document first
     hashes = compute_document_hashes(data)
 
+    # Collect new hashes by type
+    new_content_hashes = set()
+    new_structure_hashes = set()
+    for path, node in data["nodes"].items():
+        h = hashes.get(path)
+        if not h:
+            continue
+        if node["kind"] in ["string", "number", "boolean", "null"]:
+            new_content_hashes.add(h)
+        elif node["kind"] in ["object", "array"]:
+            new_structure_hashes.add(h)
+
     with driver.session(database=target_db) as session:
-        # Check if this is a re-sync and decrement old ref_counts
+        # Get old hashes from existing source (for re-sync)
         old_nodes = get_existing_source_nodes(session, doc_id)
-        if old_nodes["structures"] or old_nodes["contents"]:
+        old_structure_hashes = set(old_nodes["structures"])
+        old_content_hashes = set(old_nodes["contents"])
+
+        # Compute diff-based ref_count changes
+        struct_to_decrement, struct_to_increment, struct_unchanged = compute_ref_count_changes(
+            old_structure_hashes, new_structure_hashes
+        )
+        content_to_decrement, content_to_increment, content_unchanged = compute_ref_count_changes(
+            old_content_hashes, new_content_hashes
+        )
+
+        if old_structure_hashes or old_content_hashes:
             stats["is_resync"] = True
-            decrement_old_ref_counts(session, old_nodes["structures"], old_nodes["contents"])
+
+        # Only decrement nodes being removed (not in new set)
+        if struct_to_decrement or content_to_decrement:
+            decrement_ref_counts(session, list(struct_to_decrement), list(content_to_decrement))
+
         # 1. Merge Content nodes (leaves)
-        content_nodes = []
+        # Separate into nodes that need increment vs unchanged
+        content_nodes_to_increment = []
+        content_nodes_unchanged = []
         for path, node in data["nodes"].items():
             if node["kind"] not in ["string", "number", "boolean", "null"]:
                 continue
             h = hashes.get(path)
             if not h:
                 continue
-            content_nodes.append({
+            node_data = {
                 "hash": h,
                 "kind": node["kind"],
                 "key": node["key"],
                 "value_str": node["value_str"],
                 "value_num": node["value_num"],
                 "value_bool": node["value_bool"],
-            })
+            }
+            if h in content_unchanged:
+                content_nodes_unchanged.append(node_data)
+            else:
+                content_nodes_to_increment.append(node_data)
 
-        if content_nodes:
+        # Merge content nodes that need ref_count increment (new to this source)
+        if content_nodes_to_increment:
             result = session.run("""
                 UNWIND $nodes AS n
                 MERGE (c:Content {hash: n.hash})
@@ -257,13 +294,27 @@ def sync_document(driver, source_db: str, target_db: str, doc_id: str) -> dict:
                 ON MATCH SET c.ref_count = c.ref_count + 1
                 RETURN count(*) AS total,
                        sum(CASE WHEN c.ref_count = 1 THEN 1 ELSE 0 END) AS created
-            """, nodes=content_nodes)
+            """, nodes=content_nodes_to_increment)
             r = result.single()
             stats["content_created"] = r["created"]
             stats["content_reused"] = r["total"] - r["created"]
 
+        # Merge content nodes that are unchanged (no ref_count change needed)
+        if content_nodes_unchanged:
+            session.run("""
+                UNWIND $nodes AS n
+                MERGE (c:Content {hash: n.hash})
+                ON CREATE SET c.kind = n.kind, c.key = n.key,
+                              c.value_str = n.value_str, c.value_num = n.value_num,
+                              c.value_bool = n.value_bool, c.ref_count = 1
+            """, nodes=content_nodes_unchanged)
+            # These are all reused (they existed in old set)
+            stats["content_reused"] += len(content_nodes_unchanged)
+
         # 2. Merge Structure nodes (containers)
-        structure_nodes = []
+        # Separate into nodes that need increment vs unchanged
+        structure_nodes_to_increment = []
+        structure_nodes_unchanged = []
         for path, node in data["nodes"].items():
             if node["kind"] not in ["object", "array"]:
                 continue
@@ -272,15 +323,20 @@ def sync_document(driver, source_db: str, target_db: str, doc_id: str) -> dict:
                 continue
             child_paths = data["children"].get(path, [])
             child_keys = sorted([data["nodes"][cp]["key"] for cp in child_paths if cp in data["nodes"]])
-            structure_nodes.append({
+            node_data = {
                 "merkle": h,
                 "kind": node["kind"],
                 "key": node["key"],
                 "child_keys": child_keys,
                 "child_count": len(child_paths),
-            })
+            }
+            if h in struct_unchanged:
+                structure_nodes_unchanged.append(node_data)
+            else:
+                structure_nodes_to_increment.append(node_data)
 
-        if structure_nodes:
+        # Merge structure nodes that need ref_count increment (new to this source)
+        if structure_nodes_to_increment:
             result = session.run("""
                 UNWIND $nodes AS n
                 MERGE (s:Structure {merkle: n.merkle})
@@ -290,10 +346,22 @@ def sync_document(driver, source_db: str, target_db: str, doc_id: str) -> dict:
                 ON MATCH SET s.ref_count = s.ref_count + 1
                 RETURN count(*) AS total,
                        sum(CASE WHEN s.ref_count = 1 THEN 1 ELSE 0 END) AS created
-            """, nodes=structure_nodes)
+            """, nodes=structure_nodes_to_increment)
             r = result.single()
             stats["structure_created"] = r["created"]
             stats["structure_reused"] = r["total"] - r["created"]
+
+        # Merge structure nodes that are unchanged (no ref_count change needed)
+        if structure_nodes_unchanged:
+            session.run("""
+                UNWIND $nodes AS n
+                MERGE (s:Structure {merkle: n.merkle})
+                ON CREATE SET s.kind = n.kind, s.key = n.key,
+                              s.child_keys = n.child_keys, s.child_count = n.child_count,
+                              s.ref_count = 1
+            """, nodes=structure_nodes_unchanged)
+            # These are all reused (they existed in old set)
+            stats["structure_reused"] += len(structure_nodes_unchanged)
 
         # 3. Create relationships (only for newly created structures)
         # CONTAINS relationships
@@ -350,6 +418,9 @@ def sync_document(driver, source_db: str, target_db: str, doc_id: str) -> dict:
 
         # 4. Create/update Source node
         root_merkle = hashes.get("/root")
+        if not root_merkle:
+            return {"error": f"Failed to compute root merkle hash for {doc_id}"}
+
         now = datetime.now(timezone.utc).isoformat()
 
         session.run("""
@@ -382,7 +453,9 @@ def cleanup_orphaned_nodes(driver, target_db: str, verbose: bool = True) -> dict
         # (no HAS_ROOT or CONTAINS pointing to them)
         result = session.run("""
             MATCH (s:Structure)
-            WHERE NOT ()-[:HAS_ROOT]->(s) AND NOT ()-[:CONTAINS]->(s)
+            WHERE NOT ()-[:HAS_ROOT]->(s)
+              AND NOT ()-[:CONTAINS]->(s)
+              AND (s.ref_count IS NULL OR s.ref_count = 0)
             WITH s, s.merkle AS merkle
             DETACH DELETE s
             RETURN count(*) AS deleted
@@ -394,6 +467,7 @@ def cleanup_orphaned_nodes(driver, target_db: str, verbose: bool = True) -> dict
         result = session.run("""
             MATCH (c:Content)
             WHERE NOT ()-[:HAS_VALUE]->(c)
+              AND (c.ref_count IS NULL OR c.ref_count = 0)
             WITH c, c.hash AS hash
             DELETE c
             RETURN count(*) AS deleted

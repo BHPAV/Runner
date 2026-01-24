@@ -144,34 +144,78 @@ class HealthChecker:
             return len(sources)
 
     def check_ref_count_accuracy(self) -> Dict:
-        """Check if ref_counts match actual references."""
+        """Check if ref_counts match actual references (comprehensive)."""
         with self.driver.session(database=self.database) as session:
-            # Check Structure ref_counts vs actual HAS_ROOT count
+            # Check Structure ref_counts - count sources whose tree includes each structure
             result = session.run("""
                 MATCH (s:Structure)
-                OPTIONAL MATCH (src:Source)-[:HAS_ROOT]->(s)
-                WITH s, count(DISTINCT src) AS actual_root_refs
-                WHERE s.ref_count <> actual_root_refs
-                RETURN s.merkle AS merkle, s.ref_count AS stored, actual_root_refs AS actual
+                OPTIONAL MATCH (src:Source)-[:HAS_ROOT]->(:Structure)-[:CONTAINS*0..100]->(s)
+                WITH s, count(DISTINCT src) AS tree_refs
+
+                // Also count direct HAS_ROOT references
+                OPTIONAL MATCH (src2:Source)-[:HAS_ROOT]->(s)
+                WITH s, tree_refs + count(DISTINCT src2) AS actual_refs
+
+                WHERE s.ref_count IS NULL OR s.ref_count <> actual_refs
+                RETURN s.merkle AS merkle, s.ref_count AS stored, actual_refs AS actual
                 LIMIT 20
             """)
 
-            mismatches = [dict(r) for r in result]
+            structure_mismatches = [dict(r) for r in result]
 
+            # Count total structure mismatches
             result = session.run("""
                 MATCH (s:Structure)
-                OPTIONAL MATCH (src:Source)-[:HAS_ROOT]->(s)
-                WITH s, count(DISTINCT src) AS actual_root_refs
-                WHERE s.ref_count <> actual_root_refs
+                OPTIONAL MATCH (src:Source)-[:HAS_ROOT]->(:Structure)-[:CONTAINS*0..100]->(s)
+                WITH s, count(DISTINCT src) AS tree_refs
+                OPTIONAL MATCH (src2:Source)-[:HAS_ROOT]->(s)
+                WITH s, tree_refs + count(DISTINCT src2) AS actual_refs
+                WHERE s.ref_count IS NULL OR s.ref_count <> actual_refs
                 RETURN count(*) AS count
             """)
-            mismatch_count = result.single()["count"]
+            structure_mismatch_count = result.single()["count"]
 
-            if mismatch_count > 0:
+            if structure_mismatch_count > 0:
                 self.add_warning(
                     "ref_count_mismatch",
-                    f"{mismatch_count} Structure nodes have incorrect ref_count",
-                    count=mismatch_count
+                    f"{structure_mismatch_count} Structure nodes have incorrect ref_count (comprehensive check)",
+                    count=structure_mismatch_count
+                )
+
+            # Check Content ref_counts
+            result = session.run("""
+                MATCH (c:Content)
+                OPTIONAL MATCH (src:Source)-[:HAS_ROOT]->(:Structure)-[:CONTAINS*0..100]->(:Structure)-[:HAS_VALUE]->(c)
+                WITH c, count(DISTINCT src) AS tree_refs
+
+                // Also count direct references from root structures
+                OPTIONAL MATCH (src2:Source)-[:HAS_ROOT]->(:Structure)-[:HAS_VALUE]->(c)
+                WITH c, tree_refs + count(DISTINCT src2) AS actual_refs
+
+                WHERE c.ref_count IS NULL OR c.ref_count <> actual_refs
+                RETURN c.hash AS hash, c.ref_count AS stored, actual_refs AS actual
+                LIMIT 20
+            """)
+
+            content_mismatches = [dict(r) for r in result]
+
+            # Count total content mismatches
+            result = session.run("""
+                MATCH (c:Content)
+                OPTIONAL MATCH (src:Source)-[:HAS_ROOT]->(:Structure)-[:CONTAINS*0..100]->(:Structure)-[:HAS_VALUE]->(c)
+                WITH c, count(DISTINCT src) AS tree_refs
+                OPTIONAL MATCH (src2:Source)-[:HAS_ROOT]->(:Structure)-[:HAS_VALUE]->(c)
+                WITH c, tree_refs + count(DISTINCT src2) AS actual_refs
+                WHERE c.ref_count IS NULL OR c.ref_count <> actual_refs
+                RETURN count(*) AS count
+            """)
+            content_mismatch_count = result.single()["count"]
+
+            if content_mismatch_count > 0:
+                self.add_warning(
+                    "content_ref_count_mismatch",
+                    f"{content_mismatch_count} Content nodes have incorrect ref_count",
+                    count=content_mismatch_count
                 )
 
             # Check for null or negative ref_counts
@@ -190,8 +234,14 @@ class HealthChecker:
                         count=r["count"]
                     )
 
-            self.stats["ref_count_mismatches"] = mismatch_count
-            return {"mismatches": mismatch_count, "details": mismatches[:10]}
+            self.stats["structure_ref_count_mismatches"] = structure_mismatch_count
+            self.stats["content_ref_count_mismatches"] = content_mismatch_count
+            return {
+                "structure_mismatches": structure_mismatch_count,
+                "structure_details": structure_mismatches[:10],
+                "content_mismatches": content_mismatch_count,
+                "content_details": content_mismatches[:10],
+            }
 
     def check_duplicate_hashes(self) -> int:
         """Check for duplicate hashes (should not happen with constraints)."""

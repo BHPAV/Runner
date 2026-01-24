@@ -64,6 +64,7 @@ def get_source_nodes(driver, database: str, source_id: str) -> Dict:
             }
 
         # Get all reachable structures
+        # Depth limit (100) prevents runaway queries on deeply nested structures
         result = session.run("""
             MATCH (src:Source {source_id: $source_id})-[:HAS_ROOT]->(root:Structure)
             OPTIONAL MATCH (root)-[:CONTAINS*0..100]->(s:Structure)
@@ -75,6 +76,7 @@ def get_source_nodes(driver, database: str, source_id: str) -> Dict:
         structures = [r["merkle"] for r in result if r["merkle"]]
 
         # Get all reachable content
+        # Depth limit (100) prevents runaway queries on deeply nested structures
         result = session.run("""
             MATCH (src:Source {source_id: $source_id})-[:HAS_ROOT]->(root:Structure)
             OPTIONAL MATCH (root)-[:CONTAINS*0..100]->(s:Structure)

@@ -61,16 +61,22 @@ class HybridGraphQuery:
     # Document Operations
     # =========================================================================
 
-    def get_document(self, source_id: str) -> Optional[Dict[str, Any]]:
+    def get_document(self, source_id: str, use_batch: bool = True) -> Optional[Dict[str, Any]]:
         """
         Reconstruct a JSON document from the hybridgraph.
 
         Args:
             source_id: The source identifier
+            use_batch: If True, use optimized batch query (default).
+                       If False, use recursive queries.
 
         Returns:
             The reconstructed JSON document, or None if not found
         """
+        if use_batch:
+            return self.get_document_batch(source_id)
+
+        # Original recursive implementation
         with self.driver.session(database=self.database) as session:
             result = session.run("""
                 MATCH (source:Source {source_id: $source_id})-[:HAS_ROOT]->(root:Structure)
@@ -82,6 +88,123 @@ class HybridGraphQuery:
                 return None
 
             return self._reconstruct_node(session, record["root_merkle"])
+
+    def get_document_batch(self, source_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Reconstruct a JSON document using batch query (optimized).
+
+        Uses a single query to fetch the entire subgraph, then reconstructs
+        in memory. Much faster than recursive queries for large documents.
+        """
+        with self.driver.session(database=self.database) as session:
+            result = session.run("""
+                MATCH (source:Source {source_id: $source_id})-[:HAS_ROOT]->(root:Structure)
+
+                // Get all structures in the tree
+                OPTIONAL MATCH path = (root)-[:CONTAINS*0..100]->(s:Structure)
+                WITH root, collect(DISTINCT s) + [root] AS structures
+
+                // Get all content values
+                UNWIND structures AS struct
+                OPTIONAL MATCH (struct)-[hv:HAS_VALUE]->(c:Content)
+                WITH root, structures,
+                     collect({
+                         parent_merkle: struct.merkle,
+                         key: hv.key,
+                         hash: c.hash,
+                         kind: c.kind,
+                         value_str: c.value_str,
+                         value_num: c.value_num,
+                         value_bool: c.value_bool
+                     }) AS contents
+
+                // Get all contains relationships
+                UNWIND structures AS struct
+                OPTIONAL MATCH (struct)-[rel:CONTAINS]->(child:Structure)
+                WITH root, structures, contents,
+                     collect({
+                         parent_merkle: struct.merkle,
+                         child_merkle: child.merkle,
+                         key: rel.key
+                     }) AS contains_rels
+
+                // Return structure info
+                RETURN root.merkle AS root_merkle,
+                       [s IN structures | {
+                           merkle: s.merkle,
+                           kind: s.kind,
+                           key: s.key,
+                           child_keys: s.child_keys
+                       }] AS structures,
+                       contents,
+                       contains_rels
+            """, source_id=source_id)
+
+            record = result.single()
+            if not record:
+                return None
+
+            return self._build_tree_from_batch(
+                record["root_merkle"],
+                record["structures"],
+                record["contents"],
+                record["contains_rels"]
+            )
+
+    def _build_tree_from_batch(self, root_merkle: str, structures: list,
+                                contents: list, contains_rels: list) -> Any:
+        """Build document tree from batch query results."""
+        # Index structures by merkle
+        struct_map = {s["merkle"]: s for s in structures if s["merkle"]}
+
+        # Index contents by parent merkle
+        content_map = {}  # merkle -> list of content items
+        for c in contents:
+            if c["parent_merkle"] and c["hash"]:
+                if c["parent_merkle"] not in content_map:
+                    content_map[c["parent_merkle"]] = []
+                content_map[c["parent_merkle"]].append(c)
+
+        # Index contains relationships
+        children_map = {}  # parent_merkle -> list of (key, child_merkle)
+        for rel in contains_rels:
+            if rel["parent_merkle"] and rel["child_merkle"]:
+                if rel["parent_merkle"] not in children_map:
+                    children_map[rel["parent_merkle"]] = []
+                children_map[rel["parent_merkle"]].append((rel["key"], rel["child_merkle"]))
+
+        def build_node(merkle: str) -> Any:
+            struct = struct_map.get(merkle)
+            if not struct:
+                return None
+
+            kind = struct["kind"]
+
+            if kind == "object":
+                obj = {}
+                # Add child structures
+                for key, child_merkle in children_map.get(merkle, []):
+                    obj[key] = build_node(child_merkle)
+                # Add content values
+                for c in content_map.get(merkle, []):
+                    obj[c["key"]] = self._extract_value(c["kind"], c["value_str"], c["value_num"], c["value_bool"])
+                return obj
+
+            elif kind == "array":
+                items = []
+                # Collect all children with their indices
+                all_items = []
+                for key, child_merkle in children_map.get(merkle, []):
+                    all_items.append((int(key), build_node(child_merkle)))
+                for c in content_map.get(merkle, []):
+                    all_items.append((int(c["key"]), self._extract_value(c["kind"], c["value_str"], c["value_num"], c["value_bool"])))
+                # Sort by index and extract values
+                all_items.sort(key=lambda x: x[0])
+                return [item[1] for item in all_items]
+
+            return None
+
+        return build_node(root_merkle)
 
     def _reconstruct_node(self, session, merkle: str) -> Any:
         """Recursively reconstruct a node from its merkle hash."""
@@ -207,10 +330,11 @@ class HybridGraphQuery:
             List of source_ids containing the key-value pair
         """
         with self.driver.session(database=self.database) as session:
+            # Depth limit (100) prevents runaway queries on deeply nested structures
             result = session.run("""
                 MATCH (c:Content {key: $key, value_str: $value})
                 MATCH (s:Structure)-[:HAS_VALUE]->(c)
-                MATCH (src:Source)-[:HAS_ROOT]->(:Structure)-[:CONTAINS*0..20]->(s)
+                MATCH (src:Source)-[:HAS_ROOT]->(:Structure)-[:CONTAINS*0..100]->(s)
                 RETURN DISTINCT src.source_id AS source_id
                 LIMIT $limit
             """, key=key, value=value, limit=limit)
@@ -303,13 +427,14 @@ class HybridGraphQuery:
             - similarity: Jaccard similarity (0-1)
         """
         with self.driver.session(database=self.database) as session:
+            # Depth limit (100) prevents runaway queries on deeply nested structures
             result = session.run("""
                 MATCH (s1:Source {source_id: $id1})-[:HAS_ROOT]->(r1:Structure)
-                OPTIONAL MATCH (r1)-[:CONTAINS*0..50]->(struct1:Structure)
+                OPTIONAL MATCH (r1)-[:CONTAINS*0..100]->(struct1:Structure)
                 WITH collect(DISTINCT COALESCE(struct1.merkle, r1.merkle)) AS merkles1
 
                 MATCH (s2:Source {source_id: $id2})-[:HAS_ROOT]->(r2:Structure)
-                OPTIONAL MATCH (r2)-[:CONTAINS*0..50]->(struct2:Structure)
+                OPTIONAL MATCH (r2)-[:CONTAINS*0..100]->(struct2:Structure)
                 WITH merkles1, collect(DISTINCT COALESCE(struct2.merkle, r2.merkle)) AS merkles2
 
                 RETURN merkles1, merkles2
@@ -343,9 +468,10 @@ class HybridGraphQuery:
     def get_source_stats(self, source_id: str) -> Dict:
         """Get statistics for a specific source document."""
         with self.driver.session(database=self.database) as session:
+            # Depth limit (100) prevents runaway queries on deeply nested structures
             result = session.run("""
                 MATCH (src:Source {source_id: $source_id})-[:HAS_ROOT]->(root:Structure)
-                OPTIONAL MATCH (root)-[:CONTAINS*0..50]->(s:Structure)
+                OPTIONAL MATCH (root)-[:CONTAINS*0..100]->(s:Structure)
                 WITH src, root, collect(DISTINCT s) + [root] AS structures
 
                 UNWIND structures AS struct
@@ -462,10 +588,10 @@ class HybridGraphQuery:
 
 
 # Convenience functions for module-level access
-def get_document(source_id: str) -> Optional[Dict]:
+def get_document(source_id: str, use_batch: bool = True) -> Optional[Dict]:
     """Get a document by source_id."""
     with HybridGraphQuery() as query:
-        return query.get_document(source_id)
+        return query.get_document(source_id, use_batch=use_batch)
 
 
 def search_content(key: str, value: str, limit: int = 100) -> List[str]:

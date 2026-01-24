@@ -11,7 +11,12 @@ This module provides the deduplicated graph storage layer:
 - gc: Garbage collection for orphaned nodes
 """
 
+# Maximum depth for traversing nested JSON structures
+# This limits CONTAINS* path traversals to prevent runaway queries
+MAX_TRAVERSAL_DEPTH = 100
+
 __all__ = [
+    "MAX_TRAVERSAL_DEPTH",
     "migrate",
     "sync",
     "reader",

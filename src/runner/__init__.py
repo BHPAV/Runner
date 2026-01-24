@@ -11,13 +11,14 @@ This package provides:
 __version__ = "0.1.0"
 __author__ = "Runner Project"
 
-from runner.utils.hashing import compute_content_hash, compute_merkle_hash
-from runner.utils.neo4j import get_config, get_driver
+from .utils.hashing import compute_content_hash, compute_merkle_hash, encode_value_for_hash
+from .utils.neo4j import get_config, get_driver
 
 __all__ = [
     "__version__",
     "compute_content_hash",
     "compute_merkle_hash",
+    "encode_value_for_hash",
     "get_config",
     "get_driver",
 ]

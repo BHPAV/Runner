@@ -19,7 +19,6 @@ Environment Variables:
   TARGET_DB (default: hybridgraph)
 """
 
-import hashlib
 import json
 import os
 import sys
@@ -32,6 +31,31 @@ except ImportError:
     print("Error: neo4j driver not installed")
     sys.exit(1)
 
+try:
+    from src.runner.utils.hashing import compute_content_hash, compute_merkle_hash, encode_value_for_hash
+except ImportError:
+    # Fallback - define locally if import fails
+    import hashlib
+    def compute_content_hash(kind: str, key: str, value: str) -> str:
+        content = f"{kind}|{key}|{kind}:{value}"
+        return "c:" + hashlib.sha256(content.encode()).hexdigest()[:32]
+
+    def compute_merkle_hash(kind: str, key: str, child_hashes: list) -> str:
+        sorted_children = "|".join(sorted(child_hashes))
+        content = f"{kind}|{key}|{sorted_children}"
+        return "m:" + hashlib.sha256(content.encode()).hexdigest()[:32]
+
+    def encode_value_for_hash(kind: str, value_str, value_num, value_bool) -> str:
+        if kind == "string":
+            return value_str or ""
+        elif kind == "number":
+            return str(value_num) if value_num is not None else "0"
+        elif kind == "boolean":
+            return str(value_bool).lower() if value_bool is not None else "false"
+        elif kind == "null":
+            return "null"
+        return str(value_str or "")
+
 
 def get_config():
     return {
@@ -41,17 +65,6 @@ def get_config():
         "source_db": os.environ.get("SOURCE_DB", "jsongraph"),
         "target_db": os.environ.get("TARGET_DB", "hybridgraph"),
     }
-
-
-def compute_content_hash(kind: str, key: str, value: str) -> str:
-    content = f"{kind}|{key}|{value}"
-    return "c:" + hashlib.sha256(content.encode()).hexdigest()[:32]
-
-
-def compute_merkle_hash(kind: str, key: str, child_hashes: list) -> str:
-    sorted_children = "|".join(sorted(child_hashes))
-    content = f"{kind}|{key}|{sorted_children}"
-    return "m:" + hashlib.sha256(content.encode()).hexdigest()[:32]
 
 
 def ensure_sync_tracking(driver, source_db: str):
@@ -138,13 +151,7 @@ def compute_document_hashes(data: dict) -> dict:
     # Hash leaves first
     for path, node in data["nodes"].items():
         if node["kind"] in ["string", "number", "boolean", "null"]:
-            value = node["value_str"]
-            if value is None and node["value_num"] is not None:
-                value = str(node["value_num"])
-            elif value is None and node["value_bool"] is not None:
-                value = str(node["value_bool"]).lower()
-            elif value is None:
-                value = "null"
+            value = encode_value_for_hash(node["kind"], node["value_str"], node["value_num"], node["value_bool"])
             hashes[path] = compute_content_hash(node["kind"], node["key"], value)
 
     # Hash containers bottom-up
@@ -350,6 +357,8 @@ def sync_document(driver, source_db: str, target_db: str, doc_id: str) -> dict:
 
         # 4. Create/update Source node
         root_merkle = hashes.get("/root")
+        if not root_merkle:
+            return {"error": f"Failed to compute root merkle hash for {doc_id}"}
         now = datetime.now(timezone.utc).isoformat()
 
         session.run("""
@@ -383,6 +392,7 @@ def cleanup_orphaned_nodes(driver, target_db: str, verbose: bool = True) -> dict
         result = session.run("""
             MATCH (s:Structure)
             WHERE NOT ()-[:HAS_ROOT]->(s) AND NOT ()-[:CONTAINS]->(s)
+              AND (s.ref_count IS NULL OR s.ref_count = 0)
             WITH s, s.merkle AS merkle
             DETACH DELETE s
             RETURN count(*) AS deleted
@@ -394,6 +404,7 @@ def cleanup_orphaned_nodes(driver, target_db: str, verbose: bool = True) -> dict
         result = session.run("""
             MATCH (c:Content)
             WHERE NOT ()-[:HAS_VALUE]->(c)
+              AND (c.ref_count IS NULL OR c.ref_count = 0)
             WITH c, c.hash AS hash
             DELETE c
             RETURN count(*) AS deleted

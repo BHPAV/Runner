@@ -188,10 +188,11 @@ def search_by_value(driver, database: str, key: str, value: str, limit: int = 10
     Returns a list of source_ids that have the given key with the given value.
     """
     with driver.session(database=database) as session:
+        # Depth limit (100) prevents runaway queries on deeply nested structures
         result = session.run("""
             MATCH (c:Content {key: $key, value_str: $value})
             MATCH (s:Structure)-[:HAS_VALUE]->(c)
-            MATCH (src:Source)-[:HAS_ROOT]->(:Structure)-[:CONTAINS*0..20]->(s)
+            MATCH (src:Source)-[:HAS_ROOT]->(:Structure)-[:CONTAINS*0..100]->(s)
             RETURN DISTINCT src.source_id AS source_id
             LIMIT $limit
         """, key=key, value=value, limit=limit)
@@ -229,13 +230,14 @@ def diff_documents(driver, database: str, source_id1: str, source_id2: str) -> D
     """
     with driver.session(database=database) as session:
         # Get all structure merkles for each document
+        # Depth limit (100) prevents runaway queries on deeply nested structures
         result = session.run("""
             MATCH (s1:Source {source_id: $id1})-[:HAS_ROOT]->(r1:Structure)
-            OPTIONAL MATCH (r1)-[:CONTAINS*0..50]->(struct1:Structure)
+            OPTIONAL MATCH (r1)-[:CONTAINS*0..100]->(struct1:Structure)
             WITH collect(DISTINCT COALESCE(struct1.merkle, r1.merkle)) AS merkles1
 
             MATCH (s2:Source {source_id: $id2})-[:HAS_ROOT]->(r2:Structure)
-            OPTIONAL MATCH (r2)-[:CONTAINS*0..50]->(struct2:Structure)
+            OPTIONAL MATCH (r2)-[:CONTAINS*0..100]->(struct2:Structure)
             WITH merkles1, collect(DISTINCT COALESCE(struct2.merkle, r2.merkle)) AS merkles2
 
             RETURN merkles1, merkles2
@@ -427,9 +429,10 @@ def _count_keys(obj: Any) -> int:
 def get_source_stats(driver, database: str, source_id: str) -> Dict:
     """Get statistics for a specific source document."""
     with driver.session(database=database) as session:
+        # Depth limit (100) prevents runaway queries on deeply nested structures
         result = session.run("""
             MATCH (src:Source {source_id: $source_id})-[:HAS_ROOT]->(root:Structure)
-            OPTIONAL MATCH (root)-[:CONTAINS*0..50]->(s:Structure)
+            OPTIONAL MATCH (root)-[:CONTAINS*0..100]->(s:Structure)
             WITH src, root, collect(DISTINCT s) + [root] AS structures
 
             UNWIND structures AS struct

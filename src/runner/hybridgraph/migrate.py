@@ -12,11 +12,8 @@ Usage:
 """
 
 import argparse
-import hashlib
-import json
 import os
 import sys
-from collections import defaultdict
 from datetime import datetime, timezone
 
 try:
@@ -24,6 +21,14 @@ try:
 except ImportError:
     print("Error: neo4j driver not installed. Run: pip install neo4j")
     sys.exit(1)
+
+try:
+    from runner.utils.hashing import compute_content_hash, compute_merkle_hash, encode_value_for_hash
+except ImportError:
+    # Fallback for direct execution
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+    from runner.utils.hashing import compute_content_hash, compute_merkle_hash, encode_value_for_hash
 
 
 def get_config():
@@ -34,19 +39,6 @@ def get_config():
         "source_db": os.environ.get("NEO4J_DATABASE", "jsongraph"),
         "target_db": "hybridgraph",
     }
-
-
-def compute_content_hash(kind: str, key: str, value: str) -> str:
-    """Compute content-addressable hash for leaf values."""
-    content = f"{kind}|{key}|{value}"
-    return "c:" + hashlib.sha256(content.encode()).hexdigest()[:32]
-
-
-def compute_merkle_hash(kind: str, key: str, child_hashes: list) -> str:
-    """Compute Merkle hash for structure nodes."""
-    sorted_children = "|".join(sorted(child_hashes))
-    content = f"{kind}|{key}|{sorted_children}"
-    return "m:" + hashlib.sha256(content.encode()).hexdigest()[:32]
 
 
 def create_database(driver, db_name: str):
@@ -178,14 +170,9 @@ def compute_hashes(data: dict) -> dict:
     leaf_count = 0
     for full_path, node in data["nodes"].items():
         if node["kind"] in ["string", "number", "boolean", "null"]:
-            value = node["value_str"]
-            if value is None and node["value_num"] is not None:
-                value = str(node["value_num"])
-            elif value is None and node["value_bool"] is not None:
-                value = str(node["value_bool"]).lower()
-            elif value is None:
-                value = "null"
-
+            value = encode_value_for_hash(
+                node["kind"], node["value_str"], node["value_num"], node["value_bool"]
+            )
             hashes[full_path] = compute_content_hash(node["kind"], node["key"], value)
             leaf_count += 1
 
