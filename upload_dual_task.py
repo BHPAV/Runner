@@ -99,13 +99,13 @@ print(f"Source DB: {source_db}, Target DB: {target_db}", file=sys.stderr)
 
 def compute_content_hash(kind: str, key: str, value: str) -> str:
     content = f"{kind}|{key}|{value}"
-    return "c:" + hashlib.sha256(content.encode()).hexdigest()[:16]
+    return "c:" + hashlib.sha256(content.encode()).hexdigest()[:32]
 
 
 def compute_merkle_hash(kind: str, key: str, child_hashes: list) -> str:
     sorted_children = "|".join(sorted(child_hashes))
     content = f"{kind}|{key}|{sorted_children}"
-    return "m:" + hashlib.sha256(content.encode()).hexdigest()[:16]
+    return "m:" + hashlib.sha256(content.encode()).hexdigest()[:32]
 
 
 def flatten_json(data, parent_path="/root", parent_key="root"):

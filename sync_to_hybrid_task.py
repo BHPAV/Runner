@@ -45,13 +45,13 @@ def get_config():
 
 def compute_content_hash(kind: str, key: str, value: str) -> str:
     content = f"{kind}|{key}|{value}"
-    return "c:" + hashlib.sha256(content.encode()).hexdigest()[:16]
+    return "c:" + hashlib.sha256(content.encode()).hexdigest()[:32]
 
 
 def compute_merkle_hash(kind: str, key: str, child_hashes: list) -> str:
     sorted_children = "|".join(sorted(child_hashes))
     content = f"{kind}|{key}|{sorted_children}"
-    return "m:" + hashlib.sha256(content.encode()).hexdigest()[:16]
+    return "m:" + hashlib.sha256(content.encode()).hexdigest()[:32]
 
 
 def ensure_sync_tracking(driver, source_db: str):
@@ -163,9 +163,58 @@ def compute_document_hashes(data: dict) -> dict:
     return hashes
 
 
+def get_existing_source_nodes(session, source_id: str) -> dict:
+    """Get existing structures and content for a source (for ref_count management on re-sync)."""
+    result = session.run("""
+        MATCH (src:Source {source_id: $source_id})-[:HAS_ROOT]->(root:Structure)
+        OPTIONAL MATCH (root)-[:CONTAINS*0..100]->(s:Structure)
+        WITH [root] + collect(DISTINCT s) AS all_structs
+
+        UNWIND all_structs AS struct
+        OPTIONAL MATCH (struct)-[:HAS_VALUE]->(c:Content)
+        WITH collect(DISTINCT struct.merkle) AS structures,
+             collect(DISTINCT c.hash) AS contents
+
+        RETURN structures, contents
+    """, source_id=source_id)
+
+    record = result.single()
+    if record:
+        return {
+            "structures": [m for m in record["structures"] if m],
+            "contents": [h for h in record["contents"] if h],
+        }
+    return {"structures": [], "contents": []}
+
+
+def decrement_old_ref_counts(session, structures: list, contents: list):
+    """Decrement ref_counts for nodes that were previously referenced by this source."""
+    if structures:
+        session.run("""
+            UNWIND $merkles AS merkle
+            MATCH (s:Structure {merkle: merkle})
+            SET s.ref_count = CASE
+                WHEN s.ref_count IS NULL THEN 0
+                WHEN s.ref_count <= 1 THEN 0
+                ELSE s.ref_count - 1
+            END
+        """, merkles=structures)
+
+    if contents:
+        session.run("""
+            UNWIND $hashes AS hash
+            MATCH (c:Content {hash: hash})
+            SET c.ref_count = CASE
+                WHEN c.ref_count IS NULL THEN 0
+                WHEN c.ref_count <= 1 THEN 0
+                ELSE c.ref_count - 1
+            END
+        """, hashes=contents)
+
+
 def sync_document(driver, source_db: str, target_db: str, doc_id: str) -> dict:
     """Sync a single document from source to target."""
-    stats = {"content_created": 0, "structure_created": 0, "content_reused": 0, "structure_reused": 0}
+    stats = {"content_created": 0, "structure_created": 0, "content_reused": 0, "structure_reused": 0, "is_resync": False}
 
     # Load document data
     data = load_document_data(driver, source_db, doc_id)
@@ -176,6 +225,11 @@ def sync_document(driver, source_db: str, target_db: str, doc_id: str) -> dict:
     hashes = compute_document_hashes(data)
 
     with driver.session(database=target_db) as session:
+        # Check if this is a re-sync and decrement old ref_counts
+        old_nodes = get_existing_source_nodes(session, doc_id)
+        if old_nodes["structures"] or old_nodes["contents"]:
+            stats["is_resync"] = True
+            decrement_old_ref_counts(session, old_nodes["structures"], old_nodes["contents"])
         # 1. Merge Content nodes (leaves)
         content_nodes = []
         for path, node in data["nodes"].items():
@@ -319,7 +373,40 @@ def sync_document(driver, source_db: str, target_db: str, doc_id: str) -> dict:
     return stats
 
 
-def run_sync(limit: int = 10, verbose: bool = True) -> dict:
+def cleanup_orphaned_nodes(driver, target_db: str, verbose: bool = True) -> dict:
+    """Remove orphaned Structure and Content nodes with no incoming relationships."""
+    stats = {"orphaned_structures": 0, "orphaned_content": 0}
+
+    with driver.session(database=target_db) as session:
+        # Find and delete orphaned Structure nodes
+        # (no HAS_ROOT or CONTAINS pointing to them)
+        result = session.run("""
+            MATCH (s:Structure)
+            WHERE NOT ()-[:HAS_ROOT]->(s) AND NOT ()-[:CONTAINS]->(s)
+            WITH s, s.merkle AS merkle
+            DETACH DELETE s
+            RETURN count(*) AS deleted
+        """)
+        stats["orphaned_structures"] = result.single()["deleted"]
+
+        # Find and delete orphaned Content nodes
+        # (no HAS_VALUE pointing to them)
+        result = session.run("""
+            MATCH (c:Content)
+            WHERE NOT ()-[:HAS_VALUE]->(c)
+            WITH c, c.hash AS hash
+            DELETE c
+            RETURN count(*) AS deleted
+        """)
+        stats["orphaned_content"] = result.single()["deleted"]
+
+        if verbose and (stats["orphaned_structures"] > 0 or stats["orphaned_content"] > 0):
+            print(f"  Cleaned up: {stats['orphaned_structures']} orphaned structures, {stats['orphaned_content']} orphaned content")
+
+    return stats
+
+
+def run_sync(limit: int = 10, verbose: bool = True, cleanup: bool = True) -> dict:
     """Run incremental sync."""
     config = get_config()
     driver = GraphDatabase.driver(config["uri"], auth=(config["user"], config["password"]))
@@ -330,6 +417,8 @@ def run_sync(limit: int = 10, verbose: bool = True) -> dict:
         "content_reused": 0,
         "structure_created": 0,
         "structure_reused": 0,
+        "orphaned_structures_cleaned": 0,
+        "orphaned_content_cleaned": 0,
         "errors": [],
     }
 
@@ -368,6 +457,12 @@ def run_sync(limit: int = 10, verbose: bool = True) -> dict:
                 if verbose:
                     print(f"ERROR: {e}")
 
+        # Run cleanup for orphaned nodes
+        if cleanup:
+            cleanup_stats = cleanup_orphaned_nodes(driver, config["target_db"], verbose)
+            results["orphaned_structures_cleaned"] = cleanup_stats["orphaned_structures"]
+            results["orphaned_content_cleaned"] = cleanup_stats["orphaned_content"]
+
     finally:
         driver.close()
 
@@ -379,13 +474,14 @@ def main():
     parser = argparse.ArgumentParser(description="Sync jsongraph to hybridgraph")
     parser.add_argument("--limit", type=int, default=100, help="Max documents to sync per run")
     parser.add_argument("--quiet", action="store_true", help="Suppress output")
+    parser.add_argument("--no-cleanup", action="store_true", help="Skip orphaned node cleanup")
     args = parser.parse_args()
 
     print("=" * 60)
     print("INCREMENTAL SYNC: jsongraph → hybridgraph")
     print("=" * 60)
 
-    results = run_sync(limit=args.limit, verbose=not args.quiet)
+    results = run_sync(limit=args.limit, verbose=not args.quiet, cleanup=not args.no_cleanup)
 
     print("\n" + "=" * 60)
     print("SYNC RESULTS")
@@ -393,6 +489,8 @@ def main():
     print(f"Documents synced: {results['documents_synced']}")
     print(f"Content nodes: +{results['content_created']} new, {results['content_reused']} reused")
     print(f"Structure nodes: +{results['structure_created']} new, {results['structure_reused']} reused")
+    if results.get("orphaned_structures_cleaned", 0) > 0 or results.get("orphaned_content_cleaned", 0) > 0:
+        print(f"Orphans cleaned: {results['orphaned_structures_cleaned']} structures, {results['orphaned_content_cleaned']} content")
     if results["errors"]:
         print(f"Errors: {len(results['errors'])}")
         for err in results["errors"][:5]:

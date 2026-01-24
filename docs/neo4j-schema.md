@@ -77,19 +77,21 @@ Container nodes (objects/arrays) with Merkle hashes:
 
 ```cypher
 (:Structure {
-  merkle: "m:abc123def456",       // Merkle hash (PRIMARY KEY)
-  kind: "object",                  // object | array
+  merkle: "m:abc123def456789012345678901234",  // Merkle hash (PRIMARY KEY, 34 chars)
+  kind: "object",                               // object | array
   key: "propertyName",
-  child_keys: ["key1", "key2"],   // Sorted child keys (for objects)
+  child_keys: ["key1", "key2"],                // Sorted child keys (for objects)
   child_count: 5,
-  ref_count: 42                    // Number of sources using this structure
+  ref_count: 42                                 // Number of sources using this structure
 })
 ```
 
 The `merkle` hash is computed as:
 ```
-merkle = sha256(kind + "|" + key + "|" + sorted(child_merkle_hashes).join("|"))
+merkle = "m:" + sha256(kind + "|" + key + "|" + sorted(child_merkle_hashes).join("|"))[:32]
 ```
+
+Hash format: `m:` prefix + 32 hex characters (128 bits) from SHA-256.
 
 ### Node: `:Content`
 
@@ -97,20 +99,22 @@ Leaf values with content-addressable hashes:
 
 ```cypher
 (:Content {
-  hash: "c:789xyz012abc",          // Content hash (PRIMARY KEY)
-  kind: "string",                   // string | number | boolean | null
+  hash: "c:789xyz012abc345678901234567890ab",  // Content hash (PRIMARY KEY, 34 chars)
+  kind: "string",                               // string | number | boolean | null
   key: "propertyName",
   value_str: "text value",
   value_num: null,
   value_bool: null,
-  ref_count: 156                    // Number of structures referencing this
+  ref_count: 156                                // Number of structures referencing this
 })
 ```
 
 The `hash` is computed as:
 ```
-hash = sha256(kind + "|" + key + "|" + value)
+hash = "c:" + sha256(kind + "|" + key + "|" + value)[:32]
 ```
+
+Hash format: `c:` prefix + 32 hex characters (128 bits) from SHA-256.
 
 ### Relationships
 
@@ -241,3 +245,99 @@ The hybridgraph achieves ~90% reduction through:
 1. **Content deduplication**: Same values share one `:Content` node
 2. **Structure deduplication**: Identical JSON objects share one `:Structure` node
 3. **Merkle hashing**: Enables fast comparison and change detection
+
+---
+
+## Management Tools
+
+### Document Operations
+
+| Script | Description |
+|--------|-------------|
+| `read_from_hybrid.py` | Read and reconstruct documents from hybridgraph |
+| `delete_source_task.py` | Delete source with proper ref_count management |
+
+```bash
+# List all sources
+python read_from_hybrid.py list
+
+# Reconstruct a document
+python read_from_hybrid.py get <source_id> --pretty
+
+# Search for documents
+python read_from_hybrid.py search <key> <value>
+
+# Compare two documents
+python read_from_hybrid.py diff <source1> <source2>
+
+# Verify document integrity
+python read_from_hybrid.py verify <source_id>
+
+# Delete a source
+python delete_source_task.py <source_id>
+```
+
+### Maintenance Operations
+
+| Script | Description |
+|--------|-------------|
+| `garbage_collect_task.py` | Remove orphaned nodes with ref_count=0 |
+| `hybridgraph_health_task.py` | Check database health and integrity |
+
+```bash
+# Health check
+python hybridgraph_health_task.py
+
+# Health check with fixes
+python hybridgraph_health_task.py --fix
+
+# Garbage collection (dry run)
+python garbage_collect_task.py --dry-run
+
+# Garbage collection (actual)
+python garbage_collect_task.py
+```
+
+### Query API
+
+The `hybridgraph_queries.py` module provides a Python API:
+
+```python
+from hybridgraph_queries import HybridGraphQuery
+
+with HybridGraphQuery() as query:
+    # Get a document
+    doc = query.get_document("my_source_id")
+
+    # Search for content
+    sources = query.search_content("status", "done")
+
+    # Find shared structures
+    shared = query.find_shared_structures(min_refs=10)
+
+    # Compare documents
+    diff = query.diff_sources("doc1", "doc2")
+
+    # Get statistics
+    stats = query.get_stats()
+    dedup = query.get_deduplication_stats()
+```
+
+---
+
+## ref_count Semantics
+
+The `ref_count` field tracks how many sources reference each node:
+
+- **Increment**: When a source is synced, ref_count increases for all its nodes
+- **Decrement**: When a source is deleted or re-synced, old ref_counts decrease
+- **Garbage Collection**: Nodes with ref_count=0 and no relationships can be deleted
+
+```cypher
+-- Find nodes eligible for garbage collection
+MATCH (s:Structure)
+WHERE s.ref_count = 0
+  AND NOT ()-[:HAS_ROOT]->(s)
+  AND NOT ()-[:CONTAINS]->(s)
+RETURN s.merkle
+```
