@@ -6,9 +6,35 @@ A task execution framework with LIFO stack-based processing and Neo4j graph data
 
 | Command | Description |
 |---------|-------------|
-| `python bootstrap.py --seed` | Initialize database with default tasks |
-| `python stack_runner.py -v start <task>` | Run a task |
-| `python sync_to_hybrid_task.py` | Sync jsongraph → hybridgraph |
+| `pip install -e .` | Install package in development mode |
+| `pip install -e ".[dev]"` | Install with dev dependencies |
+| `python -m runner.core.stack_runner -v start <task>` | Run a task |
+| `pytest tests/` | Run test suite |
+
+## Package Structure
+
+```
+src/runner/
+├── core/               # Task execution engine
+│   ├── stack_runner.py # LIFO stack execution
+│   ├── runner.py       # Multi-worker executor
+│   └── bootstrap.py    # Database initialization
+├── tasks/
+│   ├── converters/     # File format → JSON
+│   ├── upload/         # Neo4j data ingestion
+│   └── utilities/      # Discovery tools
+├── hybridgraph/        # Deduplicated graph storage
+│   ├── sync.py         # Incremental sync
+│   ├── reader.py       # Document retrieval
+│   ├── queries.py      # Query API
+│   ├── health.py       # Health monitoring
+│   ├── delete.py       # Source deletion
+│   ├── gc.py           # Garbage collection
+│   └── migrate.py      # Full migration
+└── utils/              # Shared utilities
+    ├── hashing.py      # Merkle/content hashing
+    └── neo4j.py        # Connection helpers
+```
 
 ## Documentation
 
@@ -17,8 +43,9 @@ A task execution framework with LIFO stack-based processing and Neo4j graph data
 - [docs/neo4j-schema.md](docs/neo4j-schema.md) - Database schemas (detailed)
 - [docs/graph-quick-ref.md](docs/graph-quick-ref.md) - Graph schemas with live stats (LLM-optimized)
 - [docs/cypher-patterns.md](docs/cypher-patterns.md) - Common Cypher query patterns
-- [docs/sync-system.md](docs/sync-system.md) - Automatic sync between databases
-- [docs/task-reference.md](docs/task-reference.md) - Available tasks and parameters
+- [docs/sync-system.md](docs/sync-system.md) - Sync between databases
+- [docs/task-reference.md](docs/task-reference.md) - Available tasks
+- [MIGRATION.md](MIGRATION.md) - Migration guide for package reorganization
 
 ## Architecture
 
@@ -32,73 +59,62 @@ A task execution framework with LIFO stack-based processing and Neo4j graph data
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## Key Files
+## Development
 
-| File | Purpose |
-|------|---------|
-| `stack_runner.py` | Main task execution engine |
-| `bootstrap.py` | Database initialization |
-| `upload_dual_task.py` | Upload to both Neo4j databases |
-| `sync_to_hybrid_task.py` | Incremental sync with cleanup |
-| `migrate_to_hybrid.py` | Full migration script (Data nodes) |
-| `migrate_jsondoc_to_hybrid.py` | Migrate JsonDoc/JsonNode tree to hybridgraph |
-| `read_from_hybrid.py` | Read/reconstruct documents from hybridgraph |
-| `delete_source_task.py` | Delete sources with ref_count management |
-| `garbage_collect_task.py` | Remove orphaned nodes |
-| `hybridgraph_health_task.py` | Health monitoring and integrity checks |
-| `hybridgraph_queries.py` | Python query API module |
+```bash
+# Install in development mode
+pip install -e ".[dev]"
+
+# Run tests
+pytest tests/ -v
+
+# Type checking
+mypy src/runner
+
+# Linting
+ruff check src/runner
+```
 
 ## Environment
 
-Configured via `.env`:
+Create `.env` from `.env.example`:
 
 ```bash
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=password
 NEO4J_DATABASE=jsongraph
+TARGET_DB=hybridgraph
 ```
 
 ## Common Tasks
 
 ```bash
-# Upload JSON to both databases
-python stack_runner.py -v start upload_dual --params '{"json_path": "file.json"}'
+# Using the new package imports
+python -c "from runner.utils.hashing import compute_content_hash; print(compute_content_hash('string', 'test', 'value'))"
 
-# Batch upload
-python stack_runner.py -v start batch_upload_dual --params '{"file_paths": ["a.json", "b.json"]}'
-
-# Sync unsynced documents
-python stack_runner.py -v start sync_to_hybrid
-
-# Continuous background sync
-python stack_runner.py -v start periodic_sync --params '{"continuous": true}'
-
-# Read/reconstruct document from hybridgraph
-python read_from_hybrid.py get <source_id> --pretty
-
-# Search for documents containing a value
-python read_from_hybrid.py search <key> <value>
-
-# Compare two documents
-python read_from_hybrid.py diff <source_id1> <source_id2>
-
-# Verify document integrity
-python read_from_hybrid.py verify <source_id>
-
-# Delete a source
-python delete_source_task.py <source_id>
+# Run hybridgraph sync
+python -m runner.hybridgraph.sync
 
 # Health check
-python hybridgraph_health_task.py
+python -m runner.hybridgraph.health
+
+# Read/reconstruct document from hybridgraph
+python -m runner.hybridgraph.reader get <source_id> --pretty
+
+# Delete a source
+python -m runner.hybridgraph.delete <source_id>
 
 # Garbage collection
-python garbage_collect_task.py
+python -m runner.hybridgraph.gc
 
-# Migrate JsonDoc/JsonNode tree to hybridgraph
-NEO4J_DATABASE=jsongraph python migrate_jsondoc_to_hybrid.py --dry-run --limit 100
-NEO4J_DATABASE=jsongraph python migrate_jsondoc_to_hybrid.py --doc-type knowledge_person
-NEO4J_DATABASE=jsongraph python migrate_jsondoc_to_hybrid.py  # migrate all
+# Full migration
+python -m runner.hybridgraph.migrate --dry-run --limit 100
+
+# Legacy standalone scripts (still work)
+python stack_runner.py -v start upload_dual --params '{"json_path": "file.json"}'
+python sync_to_hybrid_task.py
+python read_from_hybrid.py get <source_id> --pretty
 ```
 
 ## Neo4j Databases
