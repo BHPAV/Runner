@@ -40,7 +40,8 @@ A task execution framework with LIFO stack-based processing and Neo4j graph data
 | `bootstrap.py` | Database initialization |
 | `upload_dual_task.py` | Upload to both Neo4j databases |
 | `sync_to_hybrid_task.py` | Incremental sync with cleanup |
-| `migrate_to_hybrid.py` | Full migration script |
+| `migrate_to_hybrid.py` | Full migration script (Data nodes) |
+| `migrate_jsondoc_to_hybrid.py` | Migrate JsonDoc/JsonNode tree to hybridgraph |
 | `read_from_hybrid.py` | Read/reconstruct documents from hybridgraph |
 | `delete_source_task.py` | Delete sources with ref_count management |
 | `garbage_collect_task.py` | Remove orphaned nodes |
@@ -93,11 +94,23 @@ python hybridgraph_health_task.py
 
 # Garbage collection
 python garbage_collect_task.py
+
+# Migrate JsonDoc/JsonNode tree to hybridgraph
+NEO4J_DATABASE=jsongraph python migrate_jsondoc_to_hybrid.py --dry-run --limit 100
+NEO4J_DATABASE=jsongraph python migrate_jsondoc_to_hybrid.py --doc-type knowledge_person
+NEO4J_DATABASE=jsongraph python migrate_jsondoc_to_hybrid.py  # migrate all
 ```
 
 ## Neo4j Databases
 
 | Database | Description |
 |----------|-------------|
-| `jsongraph` | Flat storage - one `:Data` node per JSON element |
+| `jsongraph` | Flat storage with two schemas: `:Data` nodes (task outputs) and `:JsonDoc/:JsonNode` tree (knowledge graph) |
 | `hybridgraph` | Deduplicated - `:Source`, `:Structure`, `:Content` nodes with Merkle hashes |
+
+### jsongraph Data Sources
+
+| Schema | Node Count | Description | Migration |
+|--------|------------|-------------|-----------|
+| `:Data` | ~46K | Task runner outputs (stack_*, run_*) | `migrate_to_hybrid.py` |
+| `:JsonDoc/:JsonNode` | ~1.4M | Knowledge graph entities (persons, orgs, locations) | `migrate_jsondoc_to_hybrid.py` |
