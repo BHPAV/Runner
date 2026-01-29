@@ -272,7 +272,7 @@ async def submit_task_request(
         result = session.run("""
             MATCH (r:TaskRequest {request_id: $request_id})
             RETURN r.request_id as request_id, r.status as status, r.created_at as created_at
-        """, request_id=request_id)
+        """, {"request_id": request_id})
         existing = result.single()
 
         if existing:
@@ -296,14 +296,14 @@ async def submit_task_request(
                 created_at: datetime()
             })
             RETURN r.request_id as request_id, r.status as status, r.created_at as created_at
-        """,
-            request_id=request_id,
-            task_id=task_id,
-            parameters=json.dumps(parameters),
-            status=initial_status,
-            priority=priority,
-            requester=f"mcp:{os.environ.get('USER', 'unknown')}"
-        )
+        """, {
+            "request_id": request_id,
+            "task_id": task_id,
+            "parameters": json.dumps(parameters),
+            "status": initial_status,
+            "priority": priority,
+            "requester": f"mcp:{os.environ.get('USER', 'unknown')}"
+        })
         created = result.single()
 
         # Create dependency relationships
@@ -313,7 +313,7 @@ async def submit_task_request(
                     MATCH (r:TaskRequest {request_id: $request_id})
                     MATCH (dep:TaskRequest {request_id: $dep_id})
                     MERGE (r)-[:DEPENDS_ON]->(dep)
-                """, request_id=request_id, dep_id=dep_id)
+                """, {"request_id": request_id, "dep_id": dep_id})
 
         return {
             "request_id": created["request_id"],
@@ -348,7 +348,7 @@ async def get_request_status(request_id: str) -> dict:
                 status: dep.status
             }) as dependencies,
             count(output) as output_count
-        """, request_id=request_id)
+        """, {"request_id": request_id})
 
         record = result.single()
         if not record or not record["request"]:
@@ -397,7 +397,7 @@ async def get_task_result(request_id: str, include_trace: bool = False) -> dict:
                 .request_id, .task_id, .status, .result_ref,
                 .finished_at, .error
             } as request
-        """, request_id=request_id)
+        """, {"request_id": request_id})
 
         record = result.single()
         if not record or not record["request"]:
@@ -508,7 +508,7 @@ async def cancel_request(request_id: str) -> dict:
                 r.finished_at = datetime(),
                 r.error = 'Cancelled by user'
             RETURN r.request_id as request_id, r.status as status
-        """, request_id=request_id)
+        """, {"request_id": request_id})
 
         record = result.single()
         if not record:
@@ -516,7 +516,7 @@ async def cancel_request(request_id: str) -> dict:
             check = session.run("""
                 MATCH (r:TaskRequest {request_id: $request_id})
                 RETURN r.status as status
-            """, request_id=request_id)
+            """, {"request_id": request_id})
             check_record = check.single()
 
             if check_record:
@@ -550,7 +550,7 @@ async def list_pending_requests(limit: int = 20, status: str = "pending") -> dic
             } as request
             ORDER BY r.priority DESC, r.created_at ASC
             LIMIT $limit
-        """, status=status, limit=limit)
+        """, {"status": status, "limit": limit})
 
         requests = []
         for record in result:
@@ -567,7 +567,7 @@ async def list_pending_requests(limit: int = 20, status: str = "pending") -> dic
         count_result = session.run("""
             MATCH (r:TaskRequest {status: $status})
             RETURN count(r) as total
-        """, status=status)
+        """, {"status": status})
         total = count_result.single()["total"]
 
         return {

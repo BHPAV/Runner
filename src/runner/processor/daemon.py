@@ -155,7 +155,7 @@ class RequestProcessor:
                     .request_id, .task_id, .parameters, .priority,
                     .requester, .created_at
                 } as request
-            """, worker_id=self.worker_id)
+            """, {"worker_id": self.worker_id})
 
             record = result.single()
             if record and record["request"]:
@@ -181,7 +181,7 @@ class RequestProcessor:
             session.run("""
                 MATCH (r:TaskRequest {request_id: $request_id})
                 SET r.status = 'executing'
-            """, request_id=request_id)
+            """, {"request_id": request_id})
         finally:
             session.close()
             driver.close()
@@ -195,7 +195,7 @@ class RequestProcessor:
                 SET r.status = 'done',
                     r.finished_at = datetime(),
                     r.result_ref = $result_ref
-            """, request_id=request_id, result_ref=result_ref)
+            """, {"request_id": request_id, "result_ref": result_ref})
         finally:
             session.close()
             driver.close()
@@ -209,7 +209,7 @@ class RequestProcessor:
                 SET r.status = 'failed',
                     r.finished_at = datetime(),
                     r.error = $error
-            """, request_id=request_id, error=error[:2000])  # Truncate long errors
+            """, {"request_id": request_id, "error": error[:2000]})  # Truncate long errors
         finally:
             session.close()
             driver.close()
@@ -232,7 +232,7 @@ class RequestProcessor:
                 }
                 SET waiting.status = 'pending'
                 RETURN waiting.request_id as unblocked
-            """, request_id=completed_request_id)
+            """, {"request_id": completed_request_id})
 
             unblocked = [r["unblocked"] for r in result]
             if unblocked and self.verbose:

@@ -65,7 +65,8 @@ INDEXES = [
 def check_schema_exists(session) -> bool:
     """Check if the TaskRequest schema already exists."""
     result = session.run("""
-        CALL db.constraints() YIELD name
+        SHOW CONSTRAINTS
+        YIELD name
         WHERE name = 'task_request_id'
         RETURN count(*) > 0 as exists
     """)
