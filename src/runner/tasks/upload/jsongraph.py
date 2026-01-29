@@ -178,7 +178,7 @@ def upload_to_neo4j(driver, database, doc_id, nodes):
         # Delete existing nodes for this doc_id
         session.run(
             "MATCH (d:Data {doc_id: $doc_id}) DETACH DELETE d",
-            doc_id=doc_id
+            {"doc_id": doc_id}
         )
 
         # Create all nodes first
@@ -196,13 +196,15 @@ def upload_to_neo4j(driver, database, doc_id, nodes):
                 })
                 RETURN d
                 """,
-                doc_id=doc_id,
-                path=node['path'],
-                kind=node['kind'],
-                key=node['key'],
-                value_str=node['value_str'],
-                value_num=node['value_num'],
-                value_bool=node['value_bool']
+                {
+                    "doc_id": doc_id,
+                    "path": node['path'],
+                    "kind": node['kind'],
+                    "key": node['key'],
+                    "value_str": node['value_str'],
+                    "value_num": node['value_num'],
+                    "value_bool": node['value_bool']
+                }
             )
             nodes_created += 1
 
@@ -216,9 +218,11 @@ def upload_to_neo4j(driver, database, doc_id, nodes):
                     CREATE (parent)-[:CONTAINS]->(child)
                     RETURN parent, child
                     """,
-                    doc_id=doc_id,
-                    parent_path=parent_path,
-                    child_path=node['path']
+                    {
+                        "doc_id": doc_id,
+                        "parent_path": parent_path,
+                        "child_path": node['path']
+                    }
                 )
                 relationships_created += 1
 

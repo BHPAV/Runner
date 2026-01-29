@@ -229,7 +229,7 @@ def upload_to_jsongraph(driver, database, doc_id, nodes):
 
     with driver.session(database=database) as session:
         # Delete existing
-        session.run("MATCH (d:Data {doc_id: $doc_id}) DETACH DELETE d", doc_id=doc_id)
+        session.run("MATCH (d:Data {doc_id: $doc_id}) DETACH DELETE d", {"doc_id": doc_id})
 
         # Create nodes
         for node in nodes:
@@ -244,15 +244,15 @@ def upload_to_jsongraph(driver, database, doc_id, nodes):
                     value_bool: $value_bool,
                     sync_status: 'synced'
                 })
-            """,
-                doc_id=doc_id,
-                path=node['path'],
-                kind=node['kind'],
-                key=node['key'],
-                value_str=node['value_str'],
-                value_num=node['value_num'],
-                value_bool=node['value_bool']
-            )
+            """, {
+                "doc_id": doc_id,
+                "path": node['path'],
+                "kind": node['kind'],
+                "key": node['key'],
+                "value_str": node['value_str'],
+                "value_num": node['value_num'],
+                "value_bool": node['value_bool']
+            })
             nodes_created += 1
 
         # Create relationships
@@ -269,11 +269,11 @@ def upload_to_jsongraph(driver, database, doc_id, nodes):
                                 MATCH (parent:Data {doc_id: $doc_id, path: $parent_path})
                                 MATCH (child:Data {doc_id: $doc_id, path: $child_path})
                                 CREATE (parent)-[:CONTAINS]->(child)
-                            """,
-                                doc_id=doc_id,
-                                parent_path=parent_path,
-                                child_path=child['path']
-                            )
+                            """, {
+                                "doc_id": doc_id,
+                                "parent_path": parent_path,
+                                "child_path": child['path']
+                            })
                             rels_created += 1
 
     return nodes_created, rels_created
@@ -299,14 +299,14 @@ def upload_to_hybridgraph(driver, database, doc_id, nodes):
                               c.value_bool = $value_bool, c.ref_count = 1
                 ON MATCH SET c.ref_count = c.ref_count + 1
                 RETURN c.ref_count = 1 AS is_new
-            """,
-                hash=node['hash'],
-                kind=node['kind'],
-                key=node['key'],
-                value_str=node['value_str'],
-                value_num=node['value_num'],
-                value_bool=node['value_bool']
-            )
+            """, {
+                "hash": node['hash'],
+                "kind": node['kind'],
+                "key": node['key'],
+                "value_str": node['value_str'],
+                "value_num": node['value_num'],
+                "value_bool": node['value_bool']
+            })
             if result.single()['is_new']:
                 content_created += 1
 
@@ -319,12 +319,12 @@ def upload_to_hybridgraph(driver, database, doc_id, nodes):
                               s.child_keys = $child_keys, s.ref_count = 1
                 ON MATCH SET s.ref_count = s.ref_count + 1
                 RETURN s.ref_count = 1 AS is_new
-            """,
-                merkle=node['hash'],
-                kind=node['kind'],
-                key=node['key'],
-                child_keys=node['child_keys']
-            )
+            """, {
+                "merkle": node['hash'],
+                "kind": node['kind'],
+                "key": node['key'],
+                "child_keys": node['child_keys']
+            })
             if result.single()['is_new']:
                 structure_created += 1
 
@@ -339,11 +339,11 @@ def upload_to_hybridgraph(driver, database, doc_id, nodes):
                             MATCH (parent:Structure {merkle: $parent_merkle})
                             MATCH (child:Structure {merkle: $child_merkle})
                             MERGE (parent)-[:CONTAINS {key: $key}]->(child)
-                        """,
-                            parent_merkle=node['hash'],
-                            child_merkle=child['hash'],
-                            key=child['key']
-                        )
+                        """, {
+                            "parent_merkle": node['hash'],
+                            "child_merkle": child['hash'],
+                            "key": child['key']
+                        })
 
         # 4. Create HAS_VALUE relationships to content
         for node in structure_nodes:
@@ -356,11 +356,11 @@ def upload_to_hybridgraph(driver, database, doc_id, nodes):
                             MATCH (s:Structure {merkle: $structure_merkle})
                             MATCH (c:Content {hash: $content_hash})
                             MERGE (s)-[:HAS_VALUE {key: $key}]->(c)
-                        """,
-                            structure_merkle=node['hash'],
-                            content_hash=child['hash'],
-                            key=child['key']
-                        )
+                        """, {
+                            "structure_merkle": node['hash'],
+                            "content_hash": child['hash'],
+                            "key": child['key']
+                        })
 
         # 5. Create/update Source node
         root_node = node_by_path.get('/root')
@@ -374,12 +374,12 @@ def upload_to_hybridgraph(driver, database, doc_id, nodes):
                 WITH source
                 MATCH (root:Structure {merkle: $root_merkle})
                 MERGE (source)-[:HAS_ROOT]->(root)
-            """,
-                doc_id=doc_id,
-                node_count=len(nodes),
-                now=now,
-                root_merkle=root_node['hash']
-            )
+            """, {
+                "doc_id": doc_id,
+                "node_count": len(nodes),
+                "now": now,
+                "root_merkle": root_node['hash']
+            })
 
     return content_created, structure_created
 
