@@ -158,7 +158,8 @@ def get_existing_source_nodes(session, source_id: str) -> dict:
     result = session.run("""
         MATCH (src:Source {source_id: $source_id})-[:HAS_ROOT]->(root:Structure)
         OPTIONAL MATCH (root)-[:CONTAINS*0..100]->(s:Structure)
-        WITH [root] + collect(DISTINCT s) AS all_structs
+        WITH root, collect(DISTINCT s) AS children
+        WITH [root] + children AS all_structs
 
         UNWIND all_structs AS struct
         OPTIONAL MATCH (struct)-[:HAS_VALUE]->(c:Content)
